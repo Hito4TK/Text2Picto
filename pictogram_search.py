@@ -1,100 +1,99 @@
 from typing import List, Dict, Tuple
-import math
+from sentence_transformers import SentenceTransformer, util
+import fugashi
 
-# picto_index のイメージ:
-# [
-#   {
-#     "label": "飲む",
-#     "keywords": ["飲む", "のみます", "おちゃ", "お茶をのむ", "水をのむ", "drink", "take a drink"],
-#     "path": "data/pictos/drink.png"
-#   },
-#   {
-#     "label": "病院",
-#     "keywords": ["びょういん", "病院", "いしゃ", "doctor", "hospital", "診察"],
-#     "path": "data/pictos/hospital.png"
-#   },
-#   ...
-# ]
+# -------------------------
+# Sentence-BERT モデル読込
+# -------------------------
+model = SentenceTransformer("sonoisa/sentence-bert-base-ja-mean-tokens")
+tagger = fugashi.Tagger()
 
-def load_picto_index() -> List[Dict[str, str]]:
-    # 本当はJSONなどからロードする
-    # ここではハードコードの例
+# -------------------------
+# ピクト辞書
+# -------------------------
+def load_picto_index():
     return [
-        {
-            "label": "飲む",
-            "keywords": ["飲む", "のみます", "おちゃ", "お茶", "水をのむ", "drink", "のもう"],
-            "path": "data/pictos/drink.png"
-        },
-        {
-            "label": "病院",
-            "keywords": ["病院", "びょういん", "いしゃ", "先生にみてもらう", "hospital", "診察"],
-            "path": "data/pictos/hospital.png"
-        },
-        {
-            "label": "待つ",
-            "keywords": ["まつ", "まってください", "待って", "待機", "待合室", "待合しつ", "wait"],
-            "path": "data/pictos/wait.png"
-        },
-        {
-            "label": "ごはん/食べる",
-            "keywords": ["ごはん", "たべる", "ごはんをたべる", "ご飯", "食事", "ごはんの時間", "eat", "meal"],
-            "path": "data/pictos/eat.png"
-        },
-        {
-            "label": "おくすり",
-            "keywords": ["薬", "くすり", "おくすり", "medicine", "薬をのむ", "おくすりのむ"],
-            "path": "data/pictos/medicine.png"
-        },
+        {"label": "飲む", "keywords": ["飲む", "お茶", "水をのむ", "drink"], "path": "data/pictos/drink.png"},
+        {"label": "病院", "keywords": ["病院", "いしゃ", "診察", "hospital"], "path": "data/pictos/hospital.png"},
+        {"label": "待つ", "keywords": ["待つ", "待機", "wait"], "path": "data/pictos/wait.png"},
+        {"label": "食べる", "keywords": ["ごはん", "たべる", "食事", "eat"], "path": "data/pictos/eat.png"},
+        {"label": "おくすり", "keywords": ["薬", "おくすり", "medicine"], "path": "data/pictos/medicine.png"},
+        {"label": "禁止", "keywords": ["禁止", "だめ", "stop", "do not"], "path": "data/pictos/do_not.png"},
+        {"label": "ポテト", "keywords": ["ポテト", "じゃがいも", "フライドポテト"], "path": "data/pictos/french_fried_potato.png"},
     ]
 
-def simple_similarity(a: str, b: str) -> float:
+# -------------------------
+# 文分割（fugashi）
+# -------------------------
+def split_into_short_chunks(text: str) -> List[str]:
     """
-    超プリミティブな類似度:
-    - 部分一致の長さベース
-    - 後で埋め込みに差し替える
+    文を自然な短文単位に分割する（fugashi版・最終調整）
     """
-    a = a.lower()
-    b = b.lower()
-    # 共通部分長っぽいものを取る
-    score = 0.0
-    for token in [a, b]:
-        # ざっくり: aがbに含まれる、bがaに含まれる で加点
-        if a in b or b in a:
-            score = 1.0
-    # ちょい工夫: 文字の重なり率
-    overlap = len(set(a) & set(b))
-    denom = max(len(set(a) | set(b)), 1)
-    score = max(score, overlap / denom)
-    return score
+    chunks = []
+    buf = ""
+    for word in tagger(text):
+        surface = word.surface
+        pos = word.feature.pos1
 
-def score_against_picto(query: str, picto_entry: Dict[str, str]) -> float:
-    # query と picto_entry["keywords"] の最大値をそのピクトのスコアに
-    return max(simple_similarity(query, kw) for kw in picto_entry["keywords"])
+        # 句読点で文を区切る
+        if surface in ["。", "！", "？"]:
+            if buf.strip():
+                chunks.append(buf.strip("。、 "))
+            buf = ""
+            continue
 
-def get_similar_pictos(
-    query_text: str,
-    picto_index: List[Dict[str, str]],
-    top_k: int = 1
-) -> List[Tuple[Dict[str, str], float]]:
+        buf += surface
+
+        # 助詞・助動詞などで区切るが、短すぎる場合は保留
+        if pos in ["助詞", "助動詞", "終助詞"] and len(buf) >= 6:
+            # 「に」＋動詞 のような構造を後で結合しやすいよう残す
+            chunks.append(buf.strip("。、 "))
+            buf = ""
+
+    # 残りを追加
+    if buf.strip():
+        chunks.append(buf.strip("。、 "))
+
+    # 空要素除去
+    chunks = [c for c in chunks if c and not all(ch in "。、！？" for ch in c)]
+
+    # 「に」「を」「が」「で」など文末助詞で終わっている場合、次と結合
+    merged = []
+    for chunk in chunks:
+        if merged and any(merged[-1].endswith(p) for p in ["に", "を", "が", "で"]):
+            merged[-1] += chunk
+        else:
+            merged.append(chunk)
+
+    return merged
+
+# -------------------------
+# 意味ベース類似度検索
+# -------------------------
+def embed(text: str):
+    return model.encode(text, convert_to_tensor=True)
+
+def get_similar_pictos(query_text: str, picto_index: List[Dict[str, str]], top_k: int = 2):
     """
-    query_text にいちばん近いピクトグラム候補を返す
+    query_text に意味的に近いピクトグラムを複数返す。
     return: [(picto_entry, score), ...] スコア高い順
     """
+    query_vec = embed(query_text)
     scored = []
     for entry in picto_index:
-        s = score_against_picto(query_text, entry)
-        scored.append((entry, s))
+        kw_vecs = [embed(k) for k in entry["keywords"]]
+        picto_vec = sum(kw_vecs) / len(kw_vecs)
+        score = float(util.cos_sim(query_vec, picto_vec))
+        scored.append((entry, score))
 
-    # スコアでソート
+    # スコア降順
     scored.sort(key=lambda x: x[1], reverse=True)
 
-    # top_k件だけ返す。スコアがめちゃ低い(0.0付近)なら
-    # pathをNoneにして「生成候補」にするなどもできる
+    # 上位 top_k 件を返す
     out = []
     for (entry, s) in scored[:top_k]:
-        candidate = dict(entry)  # copy
-        if s < 0.2:
-            # 閾値より低い → 既存ピクトなし扱い
+        candidate = dict(entry)
+        if s < 0.35:
             candidate["path"] = None
             candidate["label"] = "生成候補（まだ登録なし）"
         out.append((candidate, s))
