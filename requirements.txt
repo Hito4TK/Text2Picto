@@ -1,12 +1,21 @@
-# Streamlit core
-streamlit==1.50.0
+# --- core app ---
+streamlit
 
-# Data handling
+# --- embeddings / semantic similarity ---
+sentence-transformers
+torch
+scikit-learn
+
+# --- japanese text chunking ---
+fugashi
+unidic-lite
+
+# --- data handling (kept from your current file) ---
 pandas
 numpy
 
-# Image processing
+# --- image handling ---
 Pillow
 
-# API access
+# --- http client (used indirectly by sentence-transformers etc. too) ---
 requests
