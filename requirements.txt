@@ -1,0 +1,12 @@
+# Streamlit core
+streamlit==1.50.0
+
+# Data handling
+pandas
+numpy
+
+# Image processing
+Pillow
+
+# API access
+requests
